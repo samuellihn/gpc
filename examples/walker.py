@@ -28,14 +28,23 @@ if __name__ == "__main__":
     # Set up the environment and save file
     env = WalkerEnv(episode_length=500)
     save_file = "/tmp/walker_policy.pkl"
+    num_knots = 4
+    plan_horizon = 1.0
 
     if args.task == "train":
         # Train the policy and save it to a file
-        ctrl = PredictiveSampling(env.task, num_samples=16, noise_level=0.3)
+        ctrl = PredictiveSampling(
+            env.task,
+            num_samples=16,
+            noise_level=0.3,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
+        )
         net = DenoisingCNN(
             action_size=env.task.model.nu,
             observation_size=env.observation_size,
-            horizon=env.task.planning_horizon,
+            horizon=num_knots,
             feature_dims=[64, 64],
             timestep_embedding_dim=16,
             rngs=nnx.Rngs(0),
@@ -73,6 +82,9 @@ if __name__ == "__main__":
             task=env.task,
             num_samples=1,
             noise_level=0.3,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
         )
 
         mj_model = env.task.mj_model

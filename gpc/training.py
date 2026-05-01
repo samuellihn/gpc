@@ -53,7 +53,7 @@ def simulate_episode(
 
     # Set the initial sampling-based controller parameters
     psi = ctrl.init_params()
-    psi = psi.replace(base_params=psi.base_params.replace(rng=ctrl_rng))
+    psi = psi.replace(rng=ctrl_rng)
 
     def _scan_fn(
         carry: Tuple[SimulatorState, jax.Array, PACParams], t: int
@@ -64,7 +64,7 @@ def simulate_episode(
         # Sample action sequences from the learned policy
         # TODO: consider warm-starting the policy
         y = env._get_observation(x)
-        rng, policy_rng, explore_rng = jax.random.split(psi.base_params.rng, 3)
+        rng, policy_rng, explore_rng = jax.random.split(psi.rng, 3)
         policy_rngs = jax.random.split(policy_rng, ctrl.num_policy_samples)
         warm_start_level = 0.0
         Us = jax.vmap(policy.apply, in_axes=(0, None, 0, None))(
@@ -73,13 +73,11 @@ def simulate_episode(
 
         # Place the samples into the predictive control parameters so they
         # can be used in the predictive control update
-        psi = psi.replace(
-            policy_samples=Us, base_params=psi.base_params.replace(rng=rng)
-        )
+        psi = psi.replace(policy_samples=Us, rng=rng)
 
         # Update the action sequence with sampling-based predictive control
         psi, rollouts = ctrl.optimize(x.data, psi)
-        U_star = ctrl.get_action_sequence(psi)
+        U_star = psi.mean
 
         # Record the lowest costs achieved by SPC and the policy. The first
         # ctrl.base_ctrl.num_samples rollouts are from SPC, while the last
@@ -99,7 +97,7 @@ def simulate_episode(
         if strategy == "policy":
             u = Us[0, 0]
         elif strategy == "best":
-            u = U_star[0]
+            u = ctrl.get_action(psi, x.data.time)
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
         exploration_noise = exploration_noise_level * jax.random.normal(
@@ -109,14 +107,14 @@ def simulate_episode(
 
         # Record the initial guess for the optimal action sequence. This is used
         # to weigh the flow matching loss in the policy training.
-        U_guess = psi.base_params.mean
+        U_guess = psi.mean
 
         return (x, Us, psi), (y, U_star, U_guess, spc_best, policy_best, x)
 
     rng, u_rng = jax.random.split(rng)
     U = jax.random.normal(
         u_rng,
-        (ctrl.num_policy_samples, env.task.planning_horizon, env.task.model.nu),
+        (ctrl.num_policy_samples, ctrl.num_knots, env.task.model.nu),
     )
     _, (y, U, U_guess, J_spc, J_policy, states) = jax.lax.scan(
         _scan_fn, (x, U, psi), jnp.arange(env.episode_length)
@@ -215,7 +213,7 @@ def fit_policy(
         )
 
         # Update the optimizer and model parameters in-place via flax.nnx
-        optimizer.update(grad)
+        optimizer.update(model, grad)
 
         return rng, loss
 
@@ -284,24 +282,27 @@ def train(  # noqa: PLR0915 this is a long function, don't limit to 50 lines
     # Check that the sampling-based predictive controller is compatible. In
     # particular, we need access to the mean of the sampling distribution.
     _spc_params = ctrl.init_params()
-    assert hasattr(
-        _spc_params, "mean"
-    ), f"Controller '{type(ctrl).__name__}' is not compatible with GPC."
+    if not hasattr(_spc_params, "mean"):
+        raise AssertionError(
+            f"Controller '{type(ctrl).__name__}' is not compatible with GPC."
+        )
+    if hasattr(_spc_params, "opt_state"):
+        raise AssertionError(
+            f"Controller '{type(ctrl).__name__}' is not compatible with GPC."
+        )
 
     # Print some information about the training setup
     episode_seconds = env.episode_length * env.task.model.opt.timestep
-    horizon_seconds = env.task.planning_horizon * env.task.dt
+    horizon_seconds = ctrl.plan_horizon
     num_samples = num_policy_samples + ctrl.num_samples
     print("Training with:")
     print(
         f"  episode length: {episode_seconds} seconds"
         f" ({env.episode_length} simulation steps)"
     )
-    (
-        print(
-            f"  planning horizon: {horizon_seconds} seconds"
-            f" ({env.task.planning_horizon} knots)"
-        ),
+    print(
+        f"  planning horizon: {horizon_seconds} seconds"
+        f" ({ctrl.num_knots} knots, {ctrl.ctrl_steps} control steps)"
     )
     print(
         "  Parallel rollouts per simulation step:"
@@ -332,7 +333,7 @@ def train(  # noqa: PLR0915 this is a long function, don't limit to 50 lines
     policy = Policy(net, normalizer, env.task.u_min, env.task.u_max)
 
     # Set up the optimizer
-    optimizer = nnx.Optimizer(net, optax.adamw(learning_rate))
+    optimizer = nnx.Optimizer(net, optax.adamw(learning_rate), wrt=nnx.Param)
 
     # Set up the TensorBoard logger
     log_dir = Path(log_dir) / time.strftime("%Y%m%d_%H%M%S")
@@ -404,9 +405,9 @@ def train(  # noqa: PLR0915 this is a long function, don't limit to 50 lines
         """
         # Flatten across timesteps and initial conditions
         y = observations.reshape(-1, observations.shape[-1])
-        U = actions.reshape(-1, env.task.planning_horizon, env.task.model.nu)
+        U = actions.reshape(-1, ctrl.num_knots, env.task.model.nu)
         U_guess = previous_actions.reshape(
-            -1, env.task.planning_horizon, env.task.model.nu
+            -1, ctrl.num_knots, env.task.model.nu
         )
 
         # Rescale the actions from [u_min, u_max] to [-1, 1]

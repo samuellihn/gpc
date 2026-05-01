@@ -31,13 +31,23 @@ if __name__ == "__main__":
     env = CartPoleEnv(episode_length=200)
     save_file = "/tmp/cart_pole_policy.pkl"
 
+    num_knots = 4
+    plan_horizon = 1.0
+
     if args.task == "train":
         # Train the policy and save it to a file
-        ctrl = PredictiveSampling(env.task, num_samples=8, noise_level=0.1)
+        ctrl = PredictiveSampling(
+            env.task,
+            num_samples=8,
+            noise_level=0.1,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
+        )
         net = DenoisingMLP(
             action_size=env.task.model.nu,
             observation_size=env.observation_size,
-            horizon=env.task.planning_horizon,
+            horizon=num_knots,
             hidden_layers=[64, 64],
             rngs=nnx.Rngs(0),
         )
@@ -70,6 +80,9 @@ if __name__ == "__main__":
             task=env.task,
             num_samples=1,
             noise_level=0.1,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
         )
         mj_model = env.task.mj_model
         mj_data = mujoco.MjData(mj_model)

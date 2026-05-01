@@ -30,6 +30,8 @@ if __name__ == "__main__":
     # Set up the environment and save file
     env = HumanoidEnv(episode_length=400)
     save_file = "/tmp/humanoid_policy.pkl"
+    num_knots = 4
+    plan_horizon = 1.0
 
     if args.task == "train":
         # Train the policy and save it to a file
@@ -39,11 +41,14 @@ if __name__ == "__main__":
             noise_level=1.0,
             temperature=0.1,
             num_randomizations=2,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
         )
         net = DenoisingCNN(
             action_size=env.task.model.nu,
             observation_size=env.observation_size,
-            horizon=env.task.planning_horizon,
+            horizon=num_knots,
             feature_dims=(128,) * 3,
             timestep_embedding_dim=64,
             rngs=nnx.Rngs(0),
@@ -82,6 +87,9 @@ if __name__ == "__main__":
             num_samples=128,
             noise_level=0.5,
             num_randomizations=2,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
         )
 
         mj_model = env.task.mj_model

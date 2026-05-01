@@ -3,90 +3,100 @@ from typing import Any, Tuple
 import jax
 import jax.numpy as jnp
 from flax.struct import dataclass
-from hydrax.alg_base import SamplingBasedController, Trajectory
+from hydrax.alg_base import (
+    SamplingBasedController,
+    SamplingParams,
+    Trajectory,
+)
 
 
 @dataclass
-class PACParams:
+class PACParams(SamplingParams):
     """Parameters for the policy-augmented controller.
 
     Attributes:
-        base_params: The parameters for the base controller.
-        policy_samples: Control sequences sampled from the policy.
-        rng: Random number generator key for domain randomization.
+        tk: Knot times for the control spline.
+        mean: Mean spline knots μ.
+        rng: PRNG key.
+        policy_samples: Knot sequences from the generative policy.
     """
 
-    base_params: Any
     policy_samples: jax.Array
-    rng: jax.Array
 
 
 class PolicyAugmentedController(SamplingBasedController):
-    """An SPC generalization where samples are augmented by a learned policy."""
+    """SPC variant where rollout samples include a learned policy."""
 
     def __init__(
         self,
         base_ctrl: SamplingBasedController,
         num_policy_samples: int,
+        mpc_seed: int = 0,
     ) -> None:
         """Initialize the policy-augmented controller.
 
         Args:
             base_ctrl: The base controller to augment.
             num_policy_samples: The number of samples to draw from the policy.
+            mpc_seed: Random seed for domain-randomized dynamics. Must match
+                ``base_ctrl`` if ``num_randomizations > 1``.
         """
         self.base_ctrl = base_ctrl
         self.num_policy_samples = num_policy_samples
         super().__init__(
             base_ctrl.task,
-            base_ctrl.num_randomizations,
-            base_ctrl.risk_strategy,
-            seed=0,
+            num_randomizations=base_ctrl.num_randomizations,
+            risk_strategy=base_ctrl.risk_strategy,
+            seed=mpc_seed,
+            plan_horizon=base_ctrl.plan_horizon,
+            spline_type=base_ctrl.spline_type,
+            num_knots=base_ctrl.num_knots,
+            iterations=base_ctrl.iterations,
         )
 
-    def init_params(self) -> PACParams:
+    def init_params(
+        self, initial_knots: jax.Array = None, seed: int = 0
+    ) -> PACParams:
         """Initialize the controller parameters."""
-        base_params = self.base_ctrl.init_params()
-        base_rng, our_rng = jax.random.split(base_params.rng)
-        base_params = base_params.replace(rng=base_rng)
+        base = self.base_ctrl.init_params(initial_knots, seed)
         policy_samples = jnp.zeros(
             (
                 self.num_policy_samples,
-                self.task.planning_horizon,
+                self.num_knots,
                 self.task.model.nu,
             )
         )
         return PACParams(
-            base_params=base_params,
+            tk=base.tk,
+            mean=base.mean,
+            rng=base.rng,
             policy_samples=policy_samples,
-            rng=our_rng,
         )
 
-    def sample_controls(self, params: PACParams) -> Tuple[jax.Array, PACParams]:
-        """Sample control sequences from the base controller and the policy."""
-        # Samples from the base controller
-        base_samples, base_params = self.base_ctrl.sample_controls(
-            params.base_params
+    def sample_knots(self, params: PACParams) -> Tuple[jax.Array, PACParams]:
+        """Sample spline knots from the base controller and the policy."""
+        base_sp = SamplingParams(
+            tk=params.tk, mean=params.mean, rng=params.rng
         )
-
-        # Include samples from the policy. Assumes that thes have already been
-        # generated and stored in params.policy_samples.
-        samples = jnp.append(base_samples, params.policy_samples, axis=0)
-
-        return samples, params.replace(base_params=base_params)
+        knots_base, base_out = self.base_ctrl.sample_knots(base_sp)
+        knots = jnp.concatenate([knots_base, params.policy_samples], axis=0)
+        return knots, params.replace(rng=base_out.rng)
 
     def update_params(
         self, params: PACParams, rollouts: Trajectory
     ) -> PACParams:
-        """Update the policy parameters according to the base controller."""
-        base_params = self.base_ctrl.update_params(params.base_params, rollouts)
-        return params.replace(base_params=base_params)
+        """Update parameters using the base controller's rule."""
+        base_sp = SamplingParams(tk=params.tk, mean=params.mean, rng=params.rng)
+        base_out = self.base_ctrl.update_params(base_sp, rollouts)
+        return params.replace(mean=base_out.mean, rng=base_out.rng)
 
-    def get_action(self, params: PACParams, t: float) -> jax.Array:
-        """Get the action from the base controller at a given time."""
-        return self.base_ctrl.get_action(params.base_params, t)
+    def get_action(self, params: PACParams, t: jax.Array) -> jax.Array:
+        """Get the control action at time ``t`` from the spline mean."""
+        base_sp = SamplingParams(tk=params.tk, mean=params.mean, rng=params.rng)
+        return self.base_ctrl.get_action(base_sp, t)
 
     def get_action_sequence(self, params: PACParams) -> jax.Array:
-        """Get the action sequence from the controller."""
-        timesteps = jnp.arange(self.task.planning_horizon) * self.task.dt
-        return jax.vmap(self.get_action, in_axes=(None, 0))(params, timesteps)
+        """Dense open-loop controls from the current mean spline."""
+        tk = params.tk
+        tq = jnp.linspace(tk[0], tk[-1], self.ctrl_steps)
+        return self.interp_func(tq, tk, params.mean[None, ...])[0]

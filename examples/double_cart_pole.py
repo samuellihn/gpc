@@ -30,14 +30,23 @@ if __name__ == "__main__":
     # Set up the environment and save file
     env = DoubleCartPoleEnv(episode_length=400)
     save_file = "/tmp/double_cart_pole_policy.pkl"
+    num_knots = 4
+    plan_horizon = 1.0
 
     if args.task == "train":
         # Train the policy and save it to a file
-        ctrl = PredictiveSampling(env.task, num_samples=16, noise_level=0.3)
+        ctrl = PredictiveSampling(
+            env.task,
+            num_samples=16,
+            noise_level=0.3,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
+        )
         net = DenoisingMLP(
             action_size=env.task.model.nu,
             observation_size=env.observation_size,
-            horizon=env.task.planning_horizon,
+            horizon=num_knots,
             hidden_layers=[128, 128],
             rngs=nnx.Rngs(0),
         )
@@ -73,6 +82,9 @@ if __name__ == "__main__":
             task=env.task,
             num_samples=1,
             noise_level=0.3,
+            plan_horizon=plan_horizon,
+            num_knots=num_knots,
+            spline_type="cubic",
         )
         mj_model = env.task.mj_model
         mj_data = mujoco.MjData(mj_model)

@@ -41,7 +41,7 @@ class TrainingEnv(ABC):
     def init_state(self, rng: jax.Array) -> SimulatorState:
         """Initialize the simulator state."""
         state = SimulatorState(
-            data=mjx.make_data(self.task.model), t=0, rng=rng
+            data=self.task.make_data(), t=0, rng=rng
         )
         return self._reset_state(state)
 

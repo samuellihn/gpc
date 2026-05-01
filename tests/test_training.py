@@ -2,7 +2,7 @@ import shutil
 import time
 from pathlib import Path
 
-import evosax
+from evosax.algorithms.distribution_based.sep_cma_es import Sep_CMA_ES
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -22,14 +22,22 @@ def test_simulate() -> None:
     """Test simulating an episode."""
     rng = jax.random.key(0)
     env = ParticleEnv(episode_length=13)
+    num_knots = 4
     ctrl = PolicyAugmentedController(
-        PredictiveSampling(env.task, num_samples=8, noise_level=0.1),
+        PredictiveSampling(
+            env.task,
+            num_samples=8,
+            noise_level=0.1,
+            plan_horizon=1.0,
+            num_knots=num_knots,
+            spline_type="cubic",
+        ),
         num_policy_samples=8,
     )
     net = DenoisingMLP(
         action_size=env.task.model.nu,
         observation_size=env.observation_size,
-        horizon=env.task.planning_horizon,
+        horizon=num_knots,
         hidden_layers=[32, 32],
         rngs=nnx.Rngs(0),
     )
@@ -50,8 +58,8 @@ def test_simulate() -> None:
     )
 
     assert y.shape == (13, 4)
-    assert U.shape == (13, 5, 2)
-    assert U_guess.shape == (13, 5, 2)
+    assert U.shape == (13, num_knots, 2)
+    assert U_guess.shape == (13, num_knots, 2)
     assert J_spc.shape == (13,)
     assert J_policy.shape == (13,)
     assert isinstance(states, SimulatorState)
@@ -89,7 +97,7 @@ def test_fit() -> None:
     )
 
     # Set up the optimizer
-    optimizer = nnx.Optimizer(net, optax.adam(1e-2))
+    optimizer = nnx.Optimizer(net, optax.adam(1e-2), wrt=nnx.Param)
     batch_size = 512  # can be larger than the dataset b/c added noise
     num_epochs = 1000
 
@@ -123,18 +131,19 @@ def test_train() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     env = ParticleEnv()
+    num_knots = 4
     net = DenoisingMLP(
         action_size=env.task.model.nu,
         observation_size=env.observation_size,
-        horizon=env.task.planning_horizon,
+        horizon=num_knots,
         hidden_layers=[32, 32],
         rngs=nnx.Rngs(0),
     )
 
     # Try training with an incompatible controller
     with pytest.raises(AssertionError):
-        invalid_ctrl = Evosax(env.task, evosax.Sep_CMA_ES, num_samples=8)
-        policy = train(
+        invalid_ctrl = Evosax(env.task, Sep_CMA_ES, num_samples=8)
+        train(
             env,
             invalid_ctrl,
             net,
@@ -145,7 +154,14 @@ def test_train() -> None:
         )
 
     # Train with predictive sampling
-    ctrl = PredictiveSampling(env.task, num_samples=8, noise_level=0.1)
+    ctrl = PredictiveSampling(
+        env.task,
+        num_samples=8,
+        noise_level=0.1,
+        plan_horizon=1.0,
+        num_knots=num_knots,
+        spline_type="cubic",
+    )
     policy = train(
         env,
         ctrl,
@@ -162,11 +178,11 @@ def test_train() -> None:
     # Test the policy
     rng = jax.random.key(0)
     y = jnp.array([-0.1, 0.1, 0.0, 0.0])
-    U = jnp.zeros((env.task.planning_horizon, env.task.model.nu))
+    U = jnp.zeros((num_knots, env.task.model.nu))
     U = policy.apply(U, y, rng)
 
     # Check that the policy output points in the right direction
-    assert U.shape == (env.task.planning_horizon, env.task.model.nu)
+    assert U.shape == (num_knots, env.task.model.nu)
     assert U[0, 0] > 0.0
     assert U[0, 1] < 0.0
 
