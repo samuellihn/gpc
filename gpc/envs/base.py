@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 
 import jax
 import mujoco
@@ -30,13 +31,20 @@ class TrainingEnv(ABC):
         """Initialize the training environment."""
         self.task = task
         self.episode_length = episode_length
-        self.renderer = mujoco.Renderer(self.task.mj_model)
+        # Defer Renderer construction until render() so headless training does
+        # not allocate an EGL context or scene buffers up front.
+        self._renderer: Optional[mujoco.Renderer] = None
 
-        # Disable shadows and reflections for faster rendering
-        self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
-        self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = False
-        self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_FOG] = False
-        self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_HAZE] = False
+    def _ensure_renderer(self) -> mujoco.Renderer:
+        """Create the MuJoCo CPU renderer on first use."""
+        if self._renderer is None:
+            renderer = mujoco.Renderer(self.task.mj_model)
+            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
+            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = False
+            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_FOG] = False
+            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_HAZE] = False
+            self._renderer = renderer
+        return self._renderer
 
     def init_state(self, rng: jax.Array) -> SimulatorState:
         """Initialize the simulator state."""
@@ -63,12 +71,13 @@ class TrainingEnv(ABC):
         render_every = int(round(render_dt / sim_dt))
         steps = np.arange(0, len(states.t), render_every)
 
+        renderer = self._ensure_renderer()
         frames = []
         for i in steps:
             mjx_data = jax.tree.map(lambda x: x[i], states.data)  # noqa: B023
             mj_data = mjx.get_data(self.task.mj_model, mjx_data)
-            self.renderer.update_scene(mj_data)
-            pixels = self.renderer.render()  # H, W, C
+            renderer.update_scene(mj_data)
+            pixels = renderer.render()  # H, W, C
             frames.append(pixels.transpose(2, 0, 1))  # C, H, W
 
         return np.stack(frames)

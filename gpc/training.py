@@ -248,6 +248,7 @@ def train(  # noqa: PLR0915 this is a long function, don't limit to 50 lines
     num_videos: int = 2,
     video_fps: int = 10,
     strategy: str = "policy",
+    jit_warmup: bool = True,
 ) -> None:
     """Train a generative predictive controller.
 
@@ -271,6 +272,9 @@ def train(  # noqa: PLR0915 this is a long function, don't limit to 50 lines
         strategy: The strategy for choosing a control action to advance the
                   simulation during the data collection phase. "policy" uses the
                   first policy sample, while "best" agregates all samples.
+        jit_warmup: If True, run one full simulation batch and block before the
+                    timed training loop so XLA compile time is not attributed to
+                    the first logged iteration.
 
     """
     rng = jax.random.key(0)
@@ -431,6 +435,10 @@ def train(  # noqa: PLR0915 this is a long function, don't limit to 50 lines
             num_epochs,
             rng,
         )
+
+    if jit_warmup:
+        rng, warm_rng = jax.random.split(rng)
+        jax.block_until_ready(jit_simulate(policy, warm_rng))
 
     train_start = datetime.now()
     for i in range(num_iters):

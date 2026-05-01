@@ -20,7 +20,29 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(
         dest="task", help="What to do (choose one)"
     )
-    subparsers.add_parser("train", help="Train (and save) a generative policy")
+    train_p = subparsers.add_parser(
+        "train", help="Train (and save) a generative policy"
+    )
+    train_p.add_argument(
+        "--num-envs",
+        type=int,
+        default=256,
+        metavar="N",
+        help=(
+            "Parallel training rollouts (vmap width). Larger values improve GPU "
+            "utilization on fast accelerators at the cost of VRAM."
+        ),
+    )
+    train_p.add_argument(
+        "--num-videos",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "TensorBoard RGB videos per iteration (CPU rendering). Use 0 for "
+            "headless throughput; increase for visualization."
+        ),
+    )
     subparsers.add_parser("test", help="Test a generative policy")
     subparsers.add_parser(
         "sample", help="Bootstrap sampling-based MPC with a generative policy"
@@ -34,6 +56,8 @@ if __name__ == "__main__":
     plan_horizon = 1.0
 
     if args.task == "train":
+        num_envs = args.num_envs
+        num_videos = args.num_videos
         # Train the policy and save it to a file
         ctrl = PredictiveSampling(
             env.task,
@@ -57,10 +81,10 @@ if __name__ == "__main__":
             num_policy_samples=16,
             log_dir="/tmp/gpc_double_cart_pole",
             num_iters=50,
-            num_envs=256,
+            num_envs=num_envs,
             num_epochs=100,
             checkpoint_every=5,
-            num_videos=4,
+            num_videos=num_videos,
         )
         policy.save(save_file)
         print(f"Saved policy to {save_file}")
