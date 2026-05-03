@@ -7,7 +7,7 @@ import mujoco
 import mujoco.viewer
 from mujoco import mjx
 
-from gpc.envs import TrainingEnv
+from gpc.envs.base import TrainingEnv
 from gpc.policy import Policy
 
 

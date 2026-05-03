@@ -12,7 +12,7 @@ from hydrax.alg_base import SamplingBasedController
 from tensorboardX import SummaryWriter
 
 from gpc.augmented import PACParams, PolicyAugmentedController
-from gpc.envs import SimulatorState, TrainingEnv
+from gpc.envs.base import SimulatorState, TrainingEnv
 from gpc.policy import Policy
 
 Params = Any
